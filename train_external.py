@@ -9,11 +9,28 @@ from data.dataset import ExternalDataset
 from models.rzsr_model import RZSR_Model
 from models.knowledge_dict import KnowledgeDictionary
 from config import Config
+import copy
+
+class ModelEMA:
+    def __init__(self, model, decay=0.999):
+        self.ema_model = copy.deepcopy(model)
+        self.ema_model.eval()
+        self.decay = decay
+        for param in self.ema_model.parameters():
+            param.requires_grad = False
+
+    def update(self, model):
+        with torch.no_grad():
+            for ema_v, model_v in zip(self.ema_model.state_dict().values(), model.state_dict().values()):
+                ema_v.copy_(self.decay * ema_v + (1.0 - self.decay) * model_v)
 
 def main():
     writer = SummaryWriter(log_dir=Config.LOG_DIR)
     model = RZSR_Model(backbone_type=Config.BACKBONE, scale=Config.SCALE, k=Config.KD_K, n=Config.KD_N).to(Config.DEVICE)
     
+    # 初始化 EMA
+    ema = ModelEMA(model)
+
     # 模拟数据加载
     train_dir = Config.TRAIN_DIR
     if os.path.exists(train_dir):
@@ -50,6 +67,10 @@ def main():
             loss = criterion(sr_img, hr_img)
             loss.backward()
             optimizer.step()
+            
+            # 更新 EMA
+            ema.update(model)
+            
             epoch_loss += loss.item()
             
         avg_loss = epoch_loss/len(dataloader)
@@ -58,8 +79,10 @@ def main():
         writer.add_scalar("Loss/train", avg_loss, epoch)
         
     os.makedirs(Config.SAVE_DIR, exist_ok=True)
-    torch.save(model.state_dict(), os.path.join(Config.SAVE_DIR, "rzsr_best.pth"))
-    print("External Training 完成！权重已保存至 rzsr_best.pth。")
+    
+    # 保存 EMA 模型而不是原始模型
+    torch.save(ema.ema_model.state_dict(), os.path.join(Config.SAVE_DIR, "rzsr_best.pth"))
+    print("External Training 完成！EMA 平滑权重已保存至 rzsr_best.pth。")
     writer.close()
 
 if __name__ == "__main__":

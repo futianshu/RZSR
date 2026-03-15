@@ -32,6 +32,7 @@ results_visual/
 output_sr.png
 test_lr.png
 *.log
+temp/
 
 # Keep code files but ignore other potential large files in data
 # data/*

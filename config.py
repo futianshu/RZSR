@@ -11,6 +11,10 @@ class Config:
     NUM_BLOCKS = 4               
     FEATURES = 64                
     
+    # === 毕业论文专属：消融实验开关 ===
+    USE_AIEM = True              # 设为 False 则 AIEM 退化为普通卷积
+    USE_KD = True                # 设为 False 则移除知识字典 KD
+
     # --- 论文约束：退化环境 (IV.B 节) ---
     KERNEL_SIZE = 15             
     SIGMA_MIN, SIGMA_MAX = 0.2, 2.6  

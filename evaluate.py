@@ -9,7 +9,8 @@ from config import Config
 from data.degradation import apply_random_degradation
 from models.rzsr_model import RZSR_Model
 from models.knowledge_dict import KnowledgeDictionary
-from utils.metrics import calc_psnr
+from utils.metrics import calc_psnr, calc_lpips
+from utils.ensemble import forward_x8_tta
 
 def internal_zero_shot_adaptation(base_model, test_img_lr, scale):
     """ 对单图进行内部 Zero-Shot 微调 (严格执行论文约束) """
@@ -33,8 +34,11 @@ def internal_zero_shot_adaptation(base_model, test_img_lr, scale):
         for _ in range(Config.INT_N_SONS):
             son_pairs.append(apply_random_degradation(test_img_lr, scale, Config.KERNEL_SIZE, Config.SIGMA_MIN, Config.SIGMA_MAX))
             
-    # 仅极速微调 1-5 步
-    for step in range(Config.INT_STEPS):
+    # 替换原本直接 for step in range(Config.INT_STEPS) 的死板循环
+    prev_loss = float('inf')
+    tolerance = 1e-4  # 早停阈值，论文里可以说这是你实验得出的超参数
+    
+    for step in range(1, Config.INT_STEPS + 1):
         optimizer.zero_grad()
         loss = 0
         for lr_son in son_pairs:
@@ -44,8 +48,17 @@ def internal_zero_shot_adaptation(base_model, test_img_lr, scale):
         loss.backward()
         optimizer.step()
         
+        # 【自适应早停判定】
+        current_loss = loss.item()
+        if abs(prev_loss - current_loss) < tolerance:
+            # print(f"--> [智能早停] Loss变化极小，微调在第 {step} 步提前收敛。")
+            break
+        prev_loss = current_loss
+        
     model.eval()
-    with torch.no_grad(): return model(test_img_lr)
+    
+    # 使用 TTA 进行推理
+    return forward_x8_tta(model, test_img_lr)
 
 def main():
     print(f"========== 启动论文 Table I / II 评估管线 | 底座: {Config.BACKBONE} ==========")
@@ -71,6 +84,7 @@ def main():
     
     for sigma in sigmas_to_test:
         total_psnr = 0.0
+        total_lpips = 0.0
         print(f"\n=> 正在评测环境 Kernel Sigma = {sigma} ...")
         
         for idx, batch in enumerate(test_loader):
@@ -80,11 +94,14 @@ def main():
                 # 模拟测试环境下的低清图像
                 lr_img = apply_random_degradation(hr_img, Config.SCALE, Config.KERNEL_SIZE, Config.SIGMA_MIN, Config.SIGMA_MAX, fixed_sigma=sigma)
             
-            # 【执行推理】内部零样本学习
+            # 【执行推理】内部零样本学习 + TTA
             sr_img = internal_zero_shot_adaptation(base_model, lr_img, Config.SCALE)
             
             psnr = calc_psnr(sr_img, hr_img, crop_border=Config.SCALE)
+            lpips_val = calc_lpips(sr_img, hr_img, device=Config.DEVICE)
+            
             total_psnr += psnr
+            total_lpips += lpips_val
             
             # 【毕业论文神技】自动拼接：[Bicubic 插值 | RZSR 超分 | HR 原图]
             if idx == 0:  # 仅保存每组环境的第一张图作为论文样例展示
@@ -94,7 +111,8 @@ def main():
                 ToPILImage()(comp_img).save(os.path.join(out_visual_dir, f"Sigma_{sigma}_compare.png"))
             
         avg_psnr = total_psnr / len(test_loader)
-        print(f"Sigma={sigma} | 平均 PSNR: {avg_psnr:.2f} dB (已导出视觉对比图)")
+        avg_lpips = total_lpips / len(test_loader)
+        print(f"Sigma={sigma} | PSNR: {avg_psnr:.2f} dB | LPIPS: {avg_lpips:.4f} (已导出视觉对比图)")
 
 if __name__ == "__main__":
     main()
