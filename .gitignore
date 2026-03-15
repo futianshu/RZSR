@@ -26,8 +26,12 @@ checkpoints/
 
 # Project specific (Data & Outputs)
 data/DIV2K_HR/
+data/Set5/
+runs/
+results_visual/
 output_sr.png
 test_lr.png
+*.log
 
 # Keep code files but ignore other potential large files in data
 # data/*

@@ -1,17 +1,22 @@
 import torch.nn as nn
 from .aiem import AIEM
 from .knowledge_dict import KnowledgeDictionary
-from .basic_sr_block import BasicSRBlock
+from .backbones import ESPCNBlock, RCAB
 
 class RZSR_Model(nn.Module):
-    def __init__(self, scale=2, in_channels=3, features=64, num_blocks=4, k=1000, n=512):
+    def __init__(self, backbone_type='RCAN', scale=2, in_channels=3, features=64, num_blocks=4, k=1000, n=512):
         super().__init__()
-        # 1. 第一层卷积替换为 AIEM
-        self.aiem = AIEM(in_channels, features)
+        self.aiem = AIEM(in_channels, features, num_experts=3)
         
-        # 2. 每个基本 SR 模块后面跟着一个知识字典
-        self.sr_modules = nn.ModuleList([BasicSRBlock(features) for _ in range(num_blocks)])
-        self.kds = nn.ModuleList([KnowledgeDictionary(features, k=k, n=n) for _ in range(num_blocks)])
+        # 挂载指定的基准网络底座与知识字典
+        self.sr_modules = nn.ModuleList()
+        self.kds = nn.ModuleList()
+        for _ in range(num_blocks):
+            if backbone_type == 'ESPCN': self.sr_modules.append(ESPCNBlock(features))
+            elif backbone_type == 'RCAN': self.sr_modules.append(RCAB(features))
+            else: raise ValueError("未支持的基准模型")
+                
+            self.kds.append(KnowledgeDictionary(features, k=k, n=n))
         
         self.upsample = nn.Sequential(
             nn.Conv2d(features, features * (scale ** 2), 3, padding=1),

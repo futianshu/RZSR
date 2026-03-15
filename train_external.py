@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from data.degradation import apply_random_degradation
 from data.dataset import ExternalDataset
 from models.rzsr_model import RZSR_Model
@@ -10,17 +11,18 @@ from models.knowledge_dict import KnowledgeDictionary
 from config import Config
 
 def main():
-    model = RZSR_Model(scale=Config.SCALE, k=Config.KD_K, n=Config.KD_N).to(Config.DEVICE)
+    writer = SummaryWriter(log_dir=Config.LOG_DIR)
+    model = RZSR_Model(backbone_type=Config.BACKBONE, scale=Config.SCALE, k=Config.KD_K, n=Config.KD_N).to(Config.DEVICE)
     
     # 模拟数据加载
-    train_dir = "./data/DIV2K_HR"
+    train_dir = Config.TRAIN_DIR
     if os.path.exists(train_dir):
-        dataset = ExternalDataset(train_dir, patch_size=128)
-        dataloader = DataLoader(dataset, batch_size=Config.EXT_BATCH_SIZE, shuffle=True)
+        dataset = ExternalDataset(train_dir, patch_size=Config.PATCH_SIZE)
+        dataloader = DataLoader(dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
     else:
         print(f"找不到 {train_dir}，使用 Dummy Data 假数据以验证工程逻辑跑通。")
-        dataset = [torch.randn(3, 128, 128) for _ in range(32)]
-        dataloader = DataLoader(dataset, batch_size=Config.EXT_BATCH_SIZE)
+        dataset = [torch.randn(3, Config.PATCH_SIZE, Config.PATCH_SIZE) for _ in range(32)]
+        dataloader = DataLoader(dataset, batch_size=Config.BATCH_SIZE)
 
     criterion = nn.L1Loss()
     # 论文: LR 1e-4, drop at half epochs
@@ -28,7 +30,7 @@ def main():
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=Config.EXT_LR_DECAY_STEP, gamma=0.1)
 
     model.train()
-    print("=== 开始第一阶段：External Training ===")
+    print(f"=== 开始第一阶段：External Training ({Config.BACKBONE}) ===")
     for epoch in range(1, Config.EXT_EPOCHS + 1):
         # 论文限制: knowledge dictionary is not introduced in the first 50 epochs
         kd_active = epoch >= Config.KD_START_EPOCH
@@ -37,7 +39,7 @@ def main():
                 module.active = kd_active
                 
         epoch_loss = 0.0
-        for hr_img in dataloader:
+        for step, hr_img in enumerate(dataloader):
             hr_img = hr_img.to(Config.DEVICE)
             # 实时进行随机未知模糊降级
             with torch.no_grad():
@@ -50,12 +52,15 @@ def main():
             optimizer.step()
             epoch_loss += loss.item()
             
+        avg_loss = epoch_loss/len(dataloader)
         scheduler.step()
-        print(f"Epoch [{epoch}/{Config.EXT_EPOCHS}], Loss: {epoch_loss/len(dataloader):.4f}, KD Active: {kd_active}")
+        print(f"Epoch [{epoch}/{Config.EXT_EPOCHS}], Loss: {avg_loss:.4f}, KD Active: {kd_active}")
+        writer.add_scalar("Loss/train", avg_loss, epoch)
         
-    os.makedirs("checkpoints", exist_ok=True)
-    torch.save(model.state_dict(), "checkpoints/rzsr_external.pth")
-    print("External Training 完成！权重已保存。")
+    os.makedirs(Config.SAVE_DIR, exist_ok=True)
+    torch.save(model.state_dict(), os.path.join(Config.SAVE_DIR, "rzsr_best.pth"))
+    print("External Training 完成！权重已保存至 rzsr_best.pth。")
+    writer.close()
 
 if __name__ == "__main__":
     main()
